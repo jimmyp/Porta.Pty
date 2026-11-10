@@ -130,10 +130,9 @@ namespace Porta.Pty.Unix
         /// </summary>
         internal void Register(int pid, ReapAttempt attempt, Action<int> onExited)
         {
-            var entry = new Entry(attempt, onExited);
             lock (this.gate)
             {
-                this.children[pid] = entry;
+                this.children[pid] = new Entry(attempt, onExited);
             }
 
             if (this.Watch(pid) == 0)
@@ -162,12 +161,6 @@ namespace Porta.Pty.Unix
 
             lock (this.gate)
             {
-                if (!this.children.TryGetValue(pid, out var current) || !ReferenceEquals(current, entry))
-                {
-                    // A concurrent collector finished, or this pid now belongs to another entry.
-                    return;
-                }
-
                 this.children.Remove(pid);
             }
 
@@ -386,10 +379,7 @@ namespace Porta.Pty.Unix
 
             lock (this.gate)
             {
-                if (this.children.TryGetValue(pid, out var current) && ReferenceEquals(current, entry))
-                {
-                    this.children.Remove(pid);
-                }
+                this.children.Remove(pid);
             }
 
             if (result < 0)

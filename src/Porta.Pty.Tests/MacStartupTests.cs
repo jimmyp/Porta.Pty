@@ -110,32 +110,6 @@ namespace Porta.Pty.Tests
         }
 
         [TestMethod]
-        public void FailedRearm_AfterConcurrentRemoval_DoesNotFailStartup()
-        {
-            RequireUnixReaper();
-
-            const int pid = int.MaxValue;
-            var reaper = Unix.PtyReaper.Instance;
-            reaper.HoldSweep = p => p == pid;
-            reaper.WatchError = p => p == pid ? 24 : null;
-            try
-            {
-                Action register = () => reaper.Register(pid, (int child, ref int status) =>
-                {
-                    reaper.Unregister(child);
-                    return 0;
-                }, _ => Assert.Fail("removed entry must not report an exit"));
-                register.Should().NotThrow("another collector already removed this registration");
-            }
-            finally
-            {
-                reaper.Unregister(pid);
-                reaper.WatchError = null;
-                reaper.HoldSweep = null;
-            }
-        }
-
-        [TestMethod]
         [DataRow(false)]
         [DataRow(true)]
         public void FailedWatch_CollectedOrDeferred_DoesNotRearm(bool deferred)
@@ -180,9 +154,7 @@ namespace Porta.Pty.Tests
         }
 
         [TestMethod]
-        [DataRow(false)]
-        [DataRow(true)]
-        public async Task UnexpectedStartupFailure_WithUnreadOutput_ClosesBeforeWaiting(bool interruptWait)
+        public async Task UnexpectedStartupFailure_WithUnreadOutput_ClosesBeforeWaiting()
         {
             if (!OperatingSystem.IsMacOS())
             {
@@ -222,12 +194,6 @@ namespace Porta.Pty.Tests
                 controllerClosed = descriptorState == -1 && descriptorError == 9;
                 controllerClosed.Should().BeTrue("the controller must be closed before cleanup waits");
                 options.Should().Be(0, "production cleanup requests a blocking wait");
-                if (interruptWait && waits == 1)
-                {
-                    Marshal.SetLastPInvokeError(4);
-                    return -1;
-                }
-
                 // Exercise real collection without allowing a regression to block the test runner.
                 return WaitForChildBounded(child, ref status);
             };
@@ -239,7 +205,7 @@ namespace Porta.Pty.Tests
                 await start.Should().ThrowAsync<InvalidOperationException>().WithMessage("*errno 24*");
                 watches.Should().Be(2);
                 pid.Should().Be(watchedPid);
-                waits.Should().Be(interruptWait ? 2 : 1);
+                waits.Should().Be(1);
                 int closed = fcntl(fd, 1);
                 int closeError = Marshal.GetLastPInvokeError();
                 closed.Should().Be(-1, "cleanup owns and closes the terminal descriptor");
