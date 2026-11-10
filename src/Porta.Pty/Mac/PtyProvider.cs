@@ -20,13 +20,11 @@ namespace Porta.Pty.Mac
         private const int EINTR = 4;
 
         /// <summary>A wait operation used by startup cleanup.</summary>
-        internal delegate int CleanupWait(int pid, ref int status, int options);
+        internal delegate int CleanupWait(int controller, int pid, ref int status, int options);
 
-        /// <summary>Gets or sets the startup cleanup wait, so tests can interrupt it once.</summary>
-        internal CleanupWait WaitForCleanup { get; set; } = pty_waitpid;
-
-        /// <summary>Gets or sets a test seam run before ownership passes to the connection.</summary>
-        internal Action<int, int>? BeforeConnection { get; set; }
+        /// <summary>Gets or sets the startup cleanup wait, so tests can inspect closure and interrupt it once.</summary>
+        internal CleanupWait WaitForCleanup { get; set; } =
+            (int controller, int pid, ref int status, int options) => pty_waitpid(pid, ref status, options);
 
         /// <inheritdoc/>
         public override Task<IPtyConnection> StartTerminalAsync(PtyOptions options, TraceSource trace, CancellationToken cancellationToken)
@@ -92,7 +90,6 @@ namespace Porta.Pty.Mac
             int discardedStatus = 0;
             try
             {
-                this.BeforeConnection?.Invoke(result.MasterFd, result.Pid);
                 return Task.FromResult<IPtyConnection>(new PtyConnection(result.MasterFd, result.Pid, options.UseAsyncIo));
             }
             catch
@@ -103,7 +100,7 @@ namespace Porta.Pty.Mac
                 // macOS can hold exit in terminal teardown until unread output is discarded.
                 // Ownership has not passed to a returned connection; close exactly once, before waiting.
                 pty_close(result.MasterFd);
-                while (this.WaitForCleanup(result.Pid, ref discardedStatus, 0) < 0
+                while (this.WaitForCleanup(result.MasterFd, result.Pid, ref discardedStatus, 0) < 0
                     && Marshal.GetLastPInvokeError() == EINTR)
                 {
                 }

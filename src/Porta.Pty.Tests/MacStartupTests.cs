@@ -30,19 +30,23 @@ namespace Porta.Pty.Tests
                 int watches = 0;
                 IPtyConnection? terminal = null;
                 var exits = new ConcurrentQueue<int>();
-                var provider = new Mac.PtyProvider { BeforeConnection = (_, child) => pid = child };
+                var provider = new Mac.PtyProvider();
+                int startupThread = Environment.CurrentManagedThreadId;
                 Unix.PtyReaper.Instance.WatchError = p =>
                 {
-                    if (p != pid)
+                    if (Environment.CurrentManagedThreadId != startupThread || (pid != 0 && p != pid))
                     {
                         return null;
                     }
 
+                    Volatile.Write(ref pid, p);
                     Interlocked.Increment(ref watches);
                     SpinWait.SpinUntil(() => File.Exists(ready), 5000).Should().BeTrue();
                     return 3; // ESRCH, including the retry after waitpid returns zero.
                 };
-                Unix.PtyReaper.Instance.HoldSweep = p => p == pid;
+                // Register inserts the entry before invoking WatchError. Hold the sweep until the
+                // startup thread identifies its child, then hold only that child.
+                Unix.PtyReaper.Instance.HoldSweep = p => Volatile.Read(ref pid) == 0 || p == Volatile.Read(ref pid);
                 try
                 {
                     terminal = await provider.StartTerminalAsync(
@@ -185,24 +189,33 @@ namespace Porta.Pty.Tests
                 Assert.Inconclusive("macOS terminal close unblocks exit with unread output");
             }
 
+            RequireUnixReaper();
             string ready = Path.Combine(Path.GetTempPath(), $"porta-cleanup-{Guid.NewGuid():N}");
+            int watchedPid = 0;
             int pid = 0;
             int fd = -1;
-            var expected = new InvalidOperationException("injected startup failure");
-            var provider = new Mac.PtyProvider
+            int watches = 0;
+            int startupThread = Environment.CurrentManagedThreadId;
+            var provider = new Mac.PtyProvider();
+            Unix.PtyReaper.Instance.HoldSweep = p => Volatile.Read(ref watchedPid) == 0 || p == Volatile.Read(ref watchedPid);
+            Unix.PtyReaper.Instance.WatchError = p =>
             {
-                BeforeConnection = (controller, child) =>
+                if (Environment.CurrentManagedThreadId != startupThread || (watchedPid != 0 && p != watchedPid))
                 {
-                    fd = controller;
-                    pid = child;
-                    SpinWait.SpinUntil(() => File.Exists(ready), 5000).Should().BeTrue();
-                    throw expected;
-                },
+                    return null;
+                }
+
+                Volatile.Write(ref watchedPid, p);
+                watches++;
+                SpinWait.SpinUntil(() => File.Exists(ready), 5000).Should().BeTrue();
+                return 24; // EMFILE: a real constructor refusal, not the ESRCH fast-exit case.
             };
             int waits = 0;
             bool controllerClosed = false;
-            provider.WaitForCleanup = (int child, ref int status, int options) =>
+            provider.WaitForCleanup = (int controller, int child, ref int status, int options) =>
             {
+                fd = controller;
+                pid = child;
                 waits++;
                 int descriptorState = fcntl(fd, 1);
                 int descriptorError = Marshal.GetLastPInvokeError();
@@ -223,7 +236,9 @@ namespace Porta.Pty.Tests
                 Func<Task> start = () => provider.StartTerminalAsync(
                     Options($"printf 'unread-output'; touch '{ready}'; exit 31"),
                     new System.Diagnostics.TraceSource("startup-test"), CancellationToken.None);
-                (await start.Should().ThrowAsync<InvalidOperationException>()).Which.Should().BeSameAs(expected);
+                await start.Should().ThrowAsync<InvalidOperationException>().WithMessage("*errno 24*");
+                watches.Should().Be(2);
+                pid.Should().Be(watchedPid);
                 waits.Should().Be(interruptWait ? 2 : 1);
                 int closed = fcntl(fd, 1);
                 int closeError = Marshal.GetLastPInvokeError();
@@ -237,7 +252,8 @@ namespace Porta.Pty.Tests
             }
             finally
             {
-                provider.BeforeConnection = null;
+                Unix.PtyReaper.Instance.WatchError = null;
+                Unix.PtyReaper.Instance.HoldSweep = null;
                 // This test's controller is still ours only when cleanup never closed it.
                 if (fd >= 0 && !controllerClosed)
                 {
