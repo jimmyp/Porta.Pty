@@ -32,19 +32,21 @@ namespace Porta.Pty.Tests
                 var exits = new ConcurrentQueue<int>();
                 var provider = new Mac.PtyProvider();
                 int startupThread = Environment.CurrentManagedThreadId;
-                Unix.PtyReaper.Instance.WatchError = p =>
+                var originalWatch = Unix.PtyReaper.Instance.Watch;
+                Unix.PtyReaper.Instance.Watch = (queue, p) =>
                 {
                     if (Environment.CurrentManagedThreadId != startupThread || (pid != 0 && p != pid))
                     {
-                        return null;
+                        return originalWatch(queue, p);
                     }
 
                     Volatile.Write(ref pid, p);
                     Interlocked.Increment(ref watches);
                     SpinWait.SpinUntil(() => File.Exists(ready), 5000).Should().BeTrue();
-                    return 3; // ESRCH, including the retry after waitpid returns zero.
+                    Marshal.SetLastPInvokeError(3); // ESRCH, including the retry after waitpid returns zero.
+                    return -1;
                 };
-                // Register inserts the entry before invoking WatchError. Hold the sweep until the
+                // Register inserts the entry before invoking Watch. Hold the sweep until the
                 // startup thread identifies its child, then hold only that child.
                 Unix.PtyReaper.Instance.HoldSweep = p => Volatile.Read(ref pid) == 0 || p == Volatile.Read(ref pid);
                 try
@@ -66,7 +68,7 @@ namespace Porta.Pty.Tests
                 }
                 finally
                 {
-                    Unix.PtyReaper.Instance.WatchError = null;
+                    Unix.PtyReaper.Instance.Watch = originalWatch;
                     Unix.PtyReaper.Instance.HoldSweep = null;
                     terminal?.Dispose();
                     // If construction failed, the provider owns cleanup; never signal a collected pid.
@@ -91,15 +93,17 @@ namespace Porta.Pty.Tests
             var reaper = Unix.PtyReaper.Instance;
             int watches = 0;
             reaper.HoldSweep = p => p == pid;
-            reaper.WatchError = p =>
+            var originalWatch = reaper.Watch;
+            reaper.Watch = (queue, p) =>
             {
                 if (p != pid)
                 {
-                    return null;
+                    return originalWatch(queue, p);
                 }
 
                 watches++;
-                return 3;
+                Marshal.SetLastPInvokeError(3);
+                return -1;
             };
             try
             {
@@ -124,7 +128,7 @@ namespace Porta.Pty.Tests
             finally
             {
                 reaper.Unregister(pid);
-                reaper.WatchError = null;
+                reaper.Watch = originalWatch;
                 reaper.HoldSweep = null;
                 close(controller);
                 close(slave);
@@ -144,7 +148,17 @@ namespace Porta.Pty.Tests
             int attempts = 0;
             var reaper = Unix.PtyReaper.Instance;
             reaper.HoldSweep = p => p == pid;
-            reaper.WatchError = p => p == pid ? (++watches == 1 ? firstError : retryError) : null;
+            var originalWatch = reaper.Watch;
+            reaper.Watch = (queue, p) =>
+            {
+                if (p != pid)
+                {
+                    return originalWatch(queue, p);
+                }
+
+                Marshal.SetLastPInvokeError(++watches == 1 ? firstError : retryError);
+                return -1;
+            };
             try
             {
                 Action register = () => reaper.Register(pid, (int child, ref int status) =>
@@ -160,7 +174,7 @@ namespace Porta.Pty.Tests
             finally
             {
                 reaper.Unregister(pid);
-                reaper.WatchError = null;
+                reaper.Watch = originalWatch;
                 reaper.HoldSweep = null;
             }
         }
@@ -177,15 +191,17 @@ namespace Porta.Pty.Tests
             int reports = 0;
             var reaper = Unix.PtyReaper.Instance;
             reaper.HoldSweep = p => p == pid;
-            reaper.WatchError = p =>
+            var originalWatch = reaper.Watch;
+            reaper.Watch = (queue, p) =>
             {
                 if (p != pid)
                 {
-                    return null;
+                    return originalWatch(queue, p);
                 }
 
                 watches++;
-                return 3;
+                Marshal.SetLastPInvokeError(3);
+                return -1;
             };
             try
             {
@@ -204,7 +220,7 @@ namespace Porta.Pty.Tests
             finally
             {
                 reaper.Unregister(pid);
-                reaper.WatchError = null;
+                reaper.Watch = originalWatch;
                 reaper.HoldSweep = null;
             }
         }
@@ -226,17 +242,19 @@ namespace Porta.Pty.Tests
             int startupThread = Environment.CurrentManagedThreadId;
             var provider = new Mac.PtyProvider();
             Unix.PtyReaper.Instance.HoldSweep = p => Volatile.Read(ref watchedPid) == 0 || p == Volatile.Read(ref watchedPid);
-            Unix.PtyReaper.Instance.WatchError = p =>
+            var originalWatch = Unix.PtyReaper.Instance.Watch;
+            Unix.PtyReaper.Instance.Watch = (queue, p) =>
             {
                 if (Environment.CurrentManagedThreadId != startupThread || (watchedPid != 0 && p != watchedPid))
                 {
-                    return null;
+                    return originalWatch(queue, p);
                 }
 
                 Volatile.Write(ref watchedPid, p);
                 watches++;
                 SpinWait.SpinUntil(() => File.Exists(ready), 5000).Should().BeTrue();
-                return 24; // EMFILE: a real constructor refusal, not the ESRCH fast-exit case.
+                Marshal.SetLastPInvokeError(24); // EMFILE: a real constructor refusal, not the ESRCH fast-exit case.
+                return -1;
             };
             int waits = 0;
             bool controllerClosed = false;
@@ -274,7 +292,7 @@ namespace Porta.Pty.Tests
             }
             finally
             {
-                Unix.PtyReaper.Instance.WatchError = null;
+                Unix.PtyReaper.Instance.Watch = originalWatch;
                 Unix.PtyReaper.Instance.HoldSweep = null;
                 // This test's controller is still ours only when cleanup never closed it.
                 if (fd >= 0 && !controllerClosed)

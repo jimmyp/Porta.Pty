@@ -101,20 +101,8 @@ namespace Porta.Pty.Unix
         /// </summary>
         internal Func<int, bool>? HoldSweep { get; set; }
 
-        /// <summary>Gets or sets a test seam returning an errno instead of watching a selected child.</summary>
-        internal Func<int, int?>? WatchError { get; set; }
-
-        private int Watch(int pid)
-        {
-            int? error = this.WatchError?.Invoke(pid);
-            if (error.HasValue)
-            {
-                Marshal.SetLastPInvokeError(error.Value);
-                return -1;
-            }
-
-            return pty_exit_watch(this.queue, pid);
-        }
+        /// <summary>Gets or sets the exit notification function so tests can replace the native call.</summary>
+        internal Func<int, int, int> Watch { get; set; } = pty_exit_watch;
 
         /// <summary>Gets how many sweeps have completed, so a test can wait for later ones rather than for time.</summary>
         internal int Sweeps => Volatile.Read(ref this.sweeps);
@@ -135,7 +123,7 @@ namespace Porta.Pty.Unix
                 this.children[pid] = new Entry(attempt, onExited);
             }
 
-            if (this.Watch(pid) == 0)
+            if (this.Watch(this.queue, pid) == 0)
             {
                 return;
             }
@@ -170,8 +158,13 @@ namespace Porta.Pty.Unix
                 this.children.Remove(pid);
             }
 
-            // Other watch failures still refuse the connection. Preserve the retry's errno rather
-            // than reading it after a wait operation has overwritten it.
+            // Still running and still unwatchable, so nothing will ever reap it. There is no
+            // polling fallback to fall back TO any more, and pretending otherwise would hand back
+            // a connection whose WaitForExit never returns.
+            //
+            // The errno comes back from Collect rather than being read here: Collect calls waitpid,
+            // which sets it, so reading it at this point reported an unrelated failure in the
+            // message whose entire job is to name this one.
             throw new InvalidOperationException(
                 $"Could not watch pty child {pid} for exit (errno {watchError}).");
         }
@@ -274,7 +267,7 @@ namespace Porta.Pty.Unix
             /// <summary>Still running, and the watch is (still) armed for it.</summary>
             Watched,
 
-            /// <summary>Still running, and the notification watch could not be armed.</summary>
+            /// <summary>Still running, and it cannot be watched. Nothing will reap it.</summary>
             Unwatchable,
         }
 
@@ -374,7 +367,7 @@ namespace Porta.Pty.Unix
                 // EMFILE, say -- nothing changed between iterations, so it recursed until the stack
                 // ran out and took the host process down with a StackOverflowException, in place of
                 // the InvalidOperationException it was supposed to raise.
-                if (this.queue >= 0 && this.Watch(pid) == 0)
+                if (this.queue >= 0 && this.Watch(this.queue, pid) == 0)
                 {
                     return ReapOutcome.Watched;
                 }
