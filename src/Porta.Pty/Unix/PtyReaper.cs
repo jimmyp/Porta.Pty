@@ -155,10 +155,10 @@ namespace Porta.Pty.Unix
             // for this behaviour rather than the OS check here?
             // If a process starts exiting before we register for exit notifications,
             // macOS can return ESRCH ("no such process") on both attempts we have made
-            // to this point while waitpid returns 0 ("not finished yet").
-            // Unread output can stop it exiting. Continue startup only if we confirm
-            // there is output for the caller to read; otherwise keep the existing
-            // startup error.
+            // to this point, unread output can cause waitpid to continue returning 0 ("not finished yet")
+            //
+            // so if we reach this point and have output to read, the process has probably
+            // started exiting and we can return so the output can be read.
             if (OperatingSystem.IsMacOS() && initialWatchError == ESRCH && watchError == ESRCH
                 && pty_output_bytes(controller, out int bytes) == 0 && bytes > 0)
             {
