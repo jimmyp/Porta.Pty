@@ -151,6 +151,8 @@ namespace Porta.Pty.Unix
                 return;
             }
 
+            // Question for the maintainer: would you prefer a macOS-specific provider
+            // for this behaviour rather than the OS check here?
             // If a process starts exiting before we register for exit notifications,
             // macOS can return ESRCH ("no such process") on both attempts we have made
             // to this point while waitpid returns 0 ("not finished yet").
