@@ -76,6 +76,62 @@ namespace Porta.Pty.Tests
         }
 
         [TestMethod]
+        [DataRow(false)]
+        [DataRow(true)]
+        public void EsrchWithoutConfirmedOutput_RejectsStartup(bool invalidDescriptor)
+        {
+            if (!OperatingSystem.IsMacOS())
+            {
+                Assert.Inconclusive("macOS output queue query");
+            }
+
+            RequireUnixReaper();
+            const int pid = int.MaxValue;
+            openpty(out int controller, out int slave, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero).Should().Be(0);
+            var reaper = Unix.PtyReaper.Instance;
+            int watches = 0;
+            reaper.HoldSweep = p => p == pid;
+            reaper.WatchError = p =>
+            {
+                if (p != pid)
+                {
+                    return null;
+                }
+
+                watches++;
+                return 3;
+            };
+            try
+            {
+                int query = Unix.NativeIo.pty_output_bytes(invalidDescriptor ? -1 : controller, out int bytes);
+                int queryError = Marshal.GetLastPInvokeError();
+                if (invalidDescriptor)
+                {
+                    query.Should().Be(-1);
+                    queryError.Should().Be(9);
+                }
+                else
+                {
+                    query.Should().Be(0);
+                    bytes.Should().Be(0);
+                }
+
+                Action register = () => reaper.Register(pid, (int child, ref int status) => 0,
+                    _ => Assert.Fail("no exit status was collected"), invalidDescriptor ? -1 : controller);
+                register.Should().Throw<InvalidOperationException>().WithMessage("*errno 3*");
+                watches.Should().Be(2);
+            }
+            finally
+            {
+                reaper.Unregister(pid);
+                reaper.WatchError = null;
+                reaper.HoldSweep = null;
+                close(controller);
+                close(slave);
+            }
+        }
+
+        [TestMethod]
         [DataRow(3, 24)]
         [DataRow(24, 3)]
         [DataRow(24, 24)]
@@ -302,6 +358,9 @@ namespace Porta.Pty.Tests
                 Environment = new Dictionary<string, string>(),
                 UseAsyncIo = true,
             };
+
+        [DllImport("libc", SetLastError = true)]
+        private static extern int openpty(out int controller, out int slave, IntPtr name, IntPtr term, IntPtr size);
 
         [DllImport("libc", SetLastError = true)]
         private static extern int close(int fd);

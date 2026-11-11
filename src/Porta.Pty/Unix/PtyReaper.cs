@@ -128,7 +128,7 @@ namespace Porta.Pty.Unix
         /// Watches <paramref name="pid"/> until it exits, then calls <paramref name="onExited"/> once
         /// with its raw wait status.
         /// </summary>
-        internal void Register(int pid, ReapAttempt attempt, Action<int> onExited)
+        internal void Register(int pid, ReapAttempt attempt, Action<int> onExited, int controller = -1)
         {
             lock (this.gate)
             {
@@ -151,11 +151,15 @@ namespace Porta.Pty.Unix
                 return;
             }
 
-            if (OperatingSystem.IsMacOS() && initialWatchError == ESRCH && watchError == ESRCH)
+            // If a process starts exiting before we register for exit notifications,
+            // macOS can return ESRCH ("no such process") on both attempts we have made
+            // to this point while waitpid returns 0 ("not finished yet").
+            // Unread output can stop it exiting. Continue startup only if we confirm
+            // there is output for the caller to read; otherwise keep the existing
+            // startup error.
+            if (OperatingSystem.IsMacOS() && initialWatchError == ESRCH && watchError == ESRCH
+                && pty_output_bytes(controller, out int bytes) == 0 && bytes > 0)
             {
-                // ESRCH can precede waitpid readiness while terminal output is unread. Return the
-                // connection so its caller can drain it; Sweep will collect the real status later.
-                // Never re-add the entry: another collector may already have removed it.
                 return;
             }
 

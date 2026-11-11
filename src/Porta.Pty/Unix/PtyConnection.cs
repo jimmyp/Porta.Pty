@@ -130,7 +130,7 @@ namespace Porta.Pty.Unix
                 // One reaper for the whole process instead of a thread apiece. This is the half that
                 // actually moves the number: making reads threadless still left a watcher per
                 // connection blocked in waitpid.
-                PtyReaper.Instance.Register(pid, this.ReapNoHang, this.OnChildExited);
+                PtyReaper.Instance.Register(pid, this.ReapNoHang, this.OnChildExited, controller);
             }
             else
             {

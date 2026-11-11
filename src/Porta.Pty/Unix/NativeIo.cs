@@ -98,6 +98,10 @@ namespace Porta.Pty.Unix
         [DllImport("libporta_pty", SetLastError = true)]
         internal static extern int pty_exit_queue();
 
+        /// <summary>Queries macOS terminal output without consuming it; returns 0 on success.</summary>
+        [DllImport("libporta_pty", SetLastError = true)]
+        internal static extern int pty_output_bytes(int fd, out int bytes);
+
         /// <summary>
         /// Starts watching one pid. Returns 0, or -1 including when the child has already exited.
         /// </summary>
