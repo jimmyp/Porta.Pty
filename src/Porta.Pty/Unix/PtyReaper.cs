@@ -130,7 +130,10 @@ namespace Porta.Pty.Unix
 
             int initialWatchError = Marshal.GetLastPInvokeError();
 
-            // A child may already have exited; collect without blocking before retrying the watch.
+            // Watching failed, and the likeliest reason by far is that the child has ALREADY
+            // exited -- both kernels report that as ESRCH, indistinguishable here from anything
+            // else. Collect it directly: an exit between spawning and watching is otherwise never
+            // reported, and WaitForExit would wait on a process already gone.
             if (this.Collect(pid, out int watchError) != ReapOutcome.Unwatchable)
             {
                 // Either collected, or still running and successfully re-armed. Re-armed used to
