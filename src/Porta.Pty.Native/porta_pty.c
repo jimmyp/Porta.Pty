@@ -63,6 +63,17 @@
     #define PTY_EXPORT __attribute__((visibility("default")))
 #endif
 
+/* Query the terminal output queue without consuming it. Only used on macOS. */
+PTY_EXPORT int pty_output_bytes(int fd, int *bytes)
+{
+#if defined(__APPLE__)
+    return ioctl(fd, TIOCOUTQ, bytes);
+#else
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
 /*
  * Structure to pass terminal settings to the native spawn function.
  * This mirrors the managed Termios structure.

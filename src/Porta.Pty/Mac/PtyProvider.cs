@@ -17,6 +17,13 @@ namespace Porta.Pty.Mac
     /// </summary>
     internal class PtyProvider : Unix.PtyProvider
     {
+        /// <summary>A wait operation used by startup cleanup.</summary>
+        internal delegate int CleanupWait(int controller, int pid, ref int status, int options);
+
+        /// <summary>Gets or sets the startup cleanup wait, so tests can inspect closure.</summary>
+        internal CleanupWait WaitForCleanup { get; set; } =
+            (int controller, int pid, ref int status, int options) => pty_waitpid(pid, ref status, options);
+
         /// <inheritdoc/>
         public override Task<IPtyConnection> StartTerminalAsync(PtyOptions options, TraceSource trace, CancellationToken cancellationToken)
         {
@@ -88,8 +95,10 @@ namespace Porta.Pty.Mac
                 // The child is already running and the controller already open, so a constructor
                 // that refuses the connection would otherwise strand both.
                 pty_kill(result.Pid, SIGKILL);
-                pty_waitpid(result.Pid, ref discardedStatus, 0);
+                // macOS can hold exit in terminal teardown until unread output is discarded.
+                // Ownership has not passed to a returned connection; close exactly once, before waiting.
                 pty_close(result.MasterFd);
+                this.WaitForCleanup(result.MasterFd, result.Pid, ref discardedStatus, 0);
                 throw;
             }
         }

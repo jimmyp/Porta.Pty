@@ -39,6 +39,7 @@ namespace Porta.Pty.Unix
     internal sealed class PtyReaper
     {
         private const int EINTR = 4;
+        private const int ESRCH = 3;
 
         /// <summary>
         /// How long to wait before resuming the watch after an unexpected failure.
@@ -100,6 +101,9 @@ namespace Porta.Pty.Unix
         /// </summary>
         internal Func<int, bool>? HoldSweep { get; set; }
 
+        /// <summary>Gets or sets the exit notification function so tests can replace the native call.</summary>
+        internal Func<int, int, int> Watch { get; set; } = pty_exit_watch;
+
         /// <summary>Gets how many sweeps have completed, so a test can wait for later ones rather than for time.</summary>
         internal int Sweeps => Volatile.Read(ref this.sweeps);
 
@@ -112,17 +116,19 @@ namespace Porta.Pty.Unix
         /// Watches <paramref name="pid"/> until it exits, then calls <paramref name="onExited"/> once
         /// with its raw wait status.
         /// </summary>
-        internal void Register(int pid, ReapAttempt attempt, Action<int> onExited)
+        internal void Register(int pid, ReapAttempt attempt, Action<int> onExited, int controller = -1)
         {
             lock (this.gate)
             {
                 this.children[pid] = new Entry(attempt, onExited);
             }
 
-            if (pty_exit_watch(this.queue, pid) == 0)
+            if (this.Watch(this.queue, pid) == 0)
             {
                 return;
             }
+
+            int initialWatchError = Marshal.GetLastPInvokeError();
 
             // Watching failed, and the likeliest reason by far is that the child has ALREADY
             // exited -- both kernels report that as ESRCH, indistinguishable here from anything
@@ -133,6 +139,20 @@ namespace Porta.Pty.Unix
                 // Either collected, or still running and successfully re-armed. Re-armed used to
                 // fall through and throw, failing a spawn whose child was by then correctly
                 // watched -- and removing the registration that watch depended on.
+                return;
+            }
+
+            // Question for the maintainer: would you prefer a macOS-specific provider
+            // for this behaviour rather than the OS check here?
+            // If a process starts exiting before we register for exit notifications,
+            // macOS can return ESRCH ("no such process") on both attempts we have made
+            // to this point, unread output can cause waitpid to continue returning 0 ("not finished yet")
+            //
+            // so if we reach this point and have output to read, the process has probably
+            // started exiting and we can return so the output can be read.
+            if (OperatingSystem.IsMacOS() && initialWatchError == ESRCH && watchError == ESRCH
+                && pty_output_bytes(controller, out int bytes) == 0 && bytes > 0)
+            {
                 return;
             }
 
@@ -350,7 +370,7 @@ namespace Porta.Pty.Unix
                 // EMFILE, say -- nothing changed between iterations, so it recursed until the stack
                 // ran out and took the host process down with a StackOverflowException, in place of
                 // the InvalidOperationException it was supposed to raise.
-                if (this.queue >= 0 && pty_exit_watch(this.queue, pid) == 0)
+                if (this.queue >= 0 && this.Watch(this.queue, pid) == 0)
                 {
                     return ReapOutcome.Watched;
                 }
